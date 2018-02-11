@@ -1,0 +1,377 @@
+---
+title: "Visualization_on_US2016_ElectionResults"
+author: "Nissim Panchpor"
+date: "December 10, 2017"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(sqldf)
+library(ggmap)
+library(RColorBrewer)
+library(pscl)
+library(mfx)
+library(foreach)
+library(doParallel)
+```
+
+## In this project, I use two datasets: US 2016 election results and US County level data. I will first join both datasets, and then create a visualization that shows percentage of voters who voted for Democrats for each county in the US. 
+
+```{r, echo=FALSE}
+#Read both the data files
+
+pres = read.csv("US_County_Level_Presidential_Results_08-16.csv.bz2")
+
+cdata = read.csv("county_data.csv.bz2")
+```
+
+## 1.1 Tidy the data. Merge these datasets, retain only more interesting variables, compute additional variables you find interesting.
+
+- First I split the FIPS code in US election dataset into state and county FIPS codes.
+- Then I joined both the datasets using SQL statements on state FIPS code and county FIPS code, and while doing so considered only a few columns which I found interesting for solving Problem 1. 
+- Then I changed column names to tidy the data and make more sense of column names. Also, I created factors for region and division columns and added level names for both.
+
+```{r}
+# For each row in Presedential results dataset, seperate out state code and county codes from fips_code
+# and add new columns to the dataset
+pres = pres %>%
+  mutate(state_code = floor(fips_code/1000),
+         county_code = fips_code %% 1000)
+```
+
+```{r}
+# Combine the datasets on state followed by county codes using Inner join
+
+data11 = sqldf::sqldf("SELECT
+                     p.state_code
+                     ,p.county_code
+                     ,c.region
+                     ,c.division
+                     ,c.stname
+                     ,c.ctyname
+                     ,p.total_2016
+                     ,p.dem_2016
+                     ,p.gop_2016
+                     ,p.oth_2016
+                     ,popestimate2016
+                     FROM pres p
+                     JOIN cdata c
+                        on p.state_code = c.state
+                          AND p.county_code = c.county")
+
+# Add a new column year with 2016 as value
+data11$year = 2016
+
+# Change column names: remove 2016 from the names and give more descriptive names
+
+colnames(data11) = c("state_code","county_code",
+    "mainregion","division","state_name","county_name",
+    "total_votes","dem_votes","gop_votes","other_votes",
+    "population_estimate","year")
+
+# Create factors for region and division columns
+data11$mainregion = factor(data11$mainregion)
+data11$division = factor(data11$division)
+
+# Create levels for factors created above
+levels(data11$mainregion) = c("Northeast","Midwest","South","West")
+levels(data11$division) = c("New England","Middle Atlantic","East North Central"
+                            ,"West North Central","South Atlantic","East South Central"
+                            ,"West South Central","Mountain","Pacific")
+
+data11 = data11 %>%
+  mutate(perc_dem = 100*dem_votes/population_estimate)
+```
+
+## 1.2 Look at all variables in the dataset
+
+```{r}
+str(data11)
+
+summary(data11)
+```
+
+Description of the dataset is as follows:
+This dataset shows results of US 2016 elections results for each county in the US and some of their descriptive statistics like region, division and population estimate for 2016.
+
+- state_code: FIPS code for the state
+- county_code: FIPS code for the county
+- region: Region among 4 regions for the county
+- division: shows which division county belongs to among total of 9 divisions
+- state_name: Name of the state
+- county_name: Name of the county
+- total_votes: count of total votes for the county
+- dem_votes: count of votes for democrats from total_votes for the county
+- gop_votes: count of votes for GOP from total_votes for the county
+- other_votes: count of votes other than for democtars and GOP from total_votes
+- population_estimate: estimated population for 2016 year for the county
+- year: year for the dataset columns, in this case 2016 for all rows
+
+I would be interested in analyzing relationship of population estimate 2016, previous election results, international immigration in 2016 with 2016 election outcomes and also see its distribution at state, county, region and division levels.
+
+## 1.3 For preliminary analysis, let's plot the percentage of votes for democrats versus the county population.
+
+I am using scatterplots to visualize percentage of democrat votes vs country population.
+
+```{r}
+# Let's see the percentage of democrat voters
+# and population estimate 2016 across counties in all the states
+
+# Create a scatter plot for population, 
+# percent of democrat voters and color the points by region
+
+data11 %>%
+  ggplot() + geom_point(aes(x=population_estimate,
+                            y=perc_dem,
+                            color=mainregion)) +
+  scale_color_brewer(palette="Set1") +
+  ggtitle("Population vs % democrat voters for 2016 in US counties") +
+  ylab("Percentage of democrat voters")
+
+# Let's find which county has 10m population as per the graph below
+data11 %>%
+  filter(population_estimate>10000000) %>%
+  dplyr::select(mainregion,division,state_name,county_name, population_estimate)
+```
+- In the above scatter plot, there are a few outlier counties having a really population which makes the plot skewed. For example, one county in West region has a 2016 population estimate of a little more than 10m. upon further analysis this is Los Angeles county in CA. Its percentage of democrat voters is however only a higher than average.
+
+
+```{r}
+# Above scatter plot is skewed due to a few outliers; there are a lot of counties with comparatively low population hence there are a lot of points in the left portion of graph
+
+
+# Filter counties by population less than 1.25m
+data11 %>%
+  filter(population_estimate < 1250000) %>%
+  ggplot() + geom_point(aes(x=population_estimate,
+            y=perc_dem,
+            color=mainregion)) +
+  scale_color_brewer(palette="Set1") +
+  ggtitle("Population vs % democrat voters for 2016 in US counties
+          with population less than 1.25m") +
+  ylab("Percentage of democrat voters")
+
+```
+Looks good, but still many points in the left portion. Majority of counties in higher population range in this plot belong to Northeast or West region. Many of these counties, especially in Northeast region has a higher than average percentage votes for democrats. Some counties here in higher population region also show similar percent of democrat voters.
+
+```{r}
+
+# Filter counties by population less than 200k
+data11 %>%
+  filter(population_estimate < 200000) %>%
+  ggplot() + geom_point(aes(x=population_estimate,
+            y=perc_dem,
+            color=mainregion),
+            alpha=0.75) +
+  scale_color_brewer(palette="Set1") +
+  ggtitle("Population vs % democrat voters for 2016 in US counties
+          with population less than 200k") +
+  ylab("Percentage of democrat voters")
+```
+- Majority of counties in this plot are in Midwest and South region and some of Northeast region. Counties in South region has about average votes for democrats, while those in Northeast region have a little above average votes for democrats.
+
+```{r}
+
+# Let's see counties with a really low population
+# Filter counties by population less than 50k
+data11 %>%
+  filter(population_estimate < 50000) %>%
+  ggplot() + geom_point(aes(x=population_estimate,
+            y=perc_dem,
+            color=mainregion),
+            alpha=0.75) +
+  scale_color_brewer(palette="Set1") +
+  ggtitle("Population vs % democrat voters for 2016 in US counties
+          with population less than 50k") +
+  ylab("Percentage of democrat voters")
+```
+- Counties having population of less than 50k in 2016 are mostly in Northeast and South region. Many of these counties are situated in lower region of the plot, with percentage of democrat voters around 10%.
+
+## Problem 1.4 Create a map of percentage of votes for democrats.
+
+```{r}
+# Take county map data
+counties = map_data("county")
+
+#Create a copy of data from called data14 for problem 1.4
+data14 = data11
+
+data14$state_name = tolower(data14$state_name)
+data14$county_name = tolower(data14$county_name)
+
+# Remove word county from county_name
+#Reference: stackoverflow https://stackoverflow.com/questions/13093931/r-remove-last-word-from-string
+data14$county_name = gsub("\\s*\\w*$", "", data14$county_name)
+
+# Add population estimate and percentage of democrat
+#voters to counties dataframe joining on state and county
+data14m = sqldf::sqldf("SELECT
+                     c.*
+                     ,d.population_estimate
+                     ,d.perc_dem
+                     ,d.total_votes
+                     FROM counties c
+                     INNER JOIN data14 d
+                        on d.state_name = c.region
+                          AND d.county_name = c.subregion")
+
+```
+
+```{r}
+# Take state level map data
+states = map_data("state")
+
+# Look at the distribution of rounded up perc_dem
+table(round(data14m$perc_dem))
+
+# Looking at above distribution, create bins as necessary
+data14m$percent_democrat_voters = cut(data14m$perc_dem,
+breaks = c(-Inf,5,8,10,12,18,25,35,50))
+
+#Plot state and county map of US with counties
+#colored by percentage of voters who voted for democrats in US 2016 elections
+
+perc_dem_plot = ggplot(data = states,
+       mapping = aes(x = long, y = lat, group = group)) +
+  geom_polygon(data = data14m
+               ,mapping = aes(x = long, y = lat, group = group
+               ,fill = percent_democrat_voters) ,color = "white") +
+  geom_polygon(color = "black", fill = NA) + scale_fill_brewer(
+palette = "Blues") + ggtitle(
+  "Percentage of voters who voted for democrats in US 2016 elections") + coord_fixed(1.3)
+
+
+```
+
+
+```{r, warning=FALSE}
+par(mfrow=2:1)
+perc_dem_plot + theme_nothing(legend = TRUE)
+```
+
+- On the first map, I have plotted percentage of democrat voters at county level. I had to use map data at both states and county level using map_data function to draw state and county boundaries on the US map.
+
+- As expected, coastal areas have a higher percentage of democrat voters. Also Noertheast states like Illinois and Wisconsin have more democrat voters. Similarly, Coloradi and New Mexico have counties with higher percent of democrat voters.
+
+
+
+## 2: Coin Tossing Game (25p)
+
+## 2.1.a : Compute your expected payout in this game.
+
+- The distribution for this DGP is geomtric distribution. Geometric distribution is a special type of negative binomial distribution. Negative binomial distribution describes the number of successes k until observing r failures  where probability of success is p. Geometric distribution is a special case of negative binomial distribution, where the experiment is stopped at first failure (r=1).
+
+This problem is a slight variation of St. Petersburg paradox.
+
+
+The expected payoff is probability of outcome multiplied its monetary payoff for all possible number of heads before a tail shows up.
+The player will win \$1 if tail comes up in first coin toss, with probability of 0.5. The player will win \$2 if tail comes up after one head, with probability of 0.25. The player will win \$4 if tail comes up after two heads, with probability of 1/8 and so on.
+
+Hence 
+$$ expected payoff = 0.5*1 + 0.25*2 + 0.125*4 + 0.0625*8 + ... $$
+$$ expected payoff = 0.5+0.5+0.5+ ... $$
+$$  expected payoff = \infty $$
+                      
+Expected payoff is infinite in this game.
+
+## 2.1.b : Intuition Check: How much would you actually be willing to pay for the participation?
+
+- Since the expected payoff is infinite for repeated plays on an average, hence whatever money I put in I will win it back and more after repeated plays. Hence I would be willing to pay any amount to participate in the game.
+
+
+## 2.2.a :  What is the probability to receive n heads and a tail?
+
+```{r}
+
+#Let's write down the data in this DGP. Let the data be number of
+#heads we receive in the given 10 plays.
+
+headdata = c(0,0,1,1,1,2,3,3,4,6)
+
+```
+
+Assume that p is the probability of receiving a head in a single coin toss.
+Hence probability of getting a tail in one coin toss is 1-p
+
+Calculating probability of getting n heads and a tail:
+
+$$ Pr(X=n;p) = p^{n}.(1-p) $$
+
+If we assume a fair coin, the probability p will be 0.5
+
+Hence 
+$$ Pr(X=n;0.5) = (0.5)^{n}.(0.5) = (0.5)^{n+1} $$
+
+## 2.2.b : What is the probability to receive all 10 outcomes listed above?
+
+Again n is number heads we received as per the data given. Since all the games are independent events, we can multiply the probabilities as follwos:
+
+ L(p) = Pr(X = 0; p) . Pr(X = 0; p) . Pr(X = 1; p) .
+Pr(X = 1; p) . Pr(X = 1; p) . Pr(X = 2; p) . Pr(X = 3; p)
+. Pr(X = 3; p) . Pr(X = 4; p) . Pr(X = 6; p)
+
+$$ L(p) = Pr(X = 0; p) . Pr(X = 0; p) . Pr(X = 1; p) .
+Pr(X = 1; p) . Pr(X = 1; p) . Pr(X = 2; p) . Pr(X = 3; p)
+. Pr(X = 3; p) . Pr(X = 4; p) . Pr(X = 6; p) $$
+
+Using the formula in previous question for each term we get:
+
+$$ L(p) = p^{0} (1-p) . p^{0} (1-p) . p^{1} (1-p) . p^{1} (1-p) . p^{1} (1-p) . p^{2} (1-p) . p^{3} (1-p) . p^{3} (1-p) . p^{4} (1-p) . p^{6} (1-p) $$
+ 
+$$ L(p) = p^{21} . (1-p)^{10} $$
+
+## 2.2.c : What is the log-likelihood function of this data as a function of the parameter?
+
+Let l(p) be the log-likelihood function if given data.
+Taking log of above function for L(p) we get,
+
+$$ l(p) = log[L(p)] $$
+
+ $$  l(p) = log[p^{21} . (1-p)^{10}] $$
+ $$l(p)  = log[p^{21}] + log[(1-p)^{10}] $$
+$$l(p)  = 21.log[p] + 10.log[1-p] $$
+
+
+## 2.2.d : Let's analytically solve this log-likelihood for the optimal probabilty p hat.
+
+Let's take derivative with respect to p of l(p) found in previous answer and set the derivative to 0
+
+$$ \frac{\partial l(p)}{\partial p} = 0 $$
+
+$$ \frac{\partial [21.log(p) + 10.log(1-p)]}{\partial p} = 0 $$                            
+
+Hence after taking derivative we get:
+$$ 21(1/p) - 10(1/1-p) = 0 $$
+
+$$ 21(1/p) = 10(1/1-p) $$
+
+$$ 21 - 21p = 10p $$
+
+$$ 21 = 31.p $$
+
+$$ p = 21/31 $$
+
+$$ \hat p = 0.6774 $$ 
+
+This is optimal probability p hat = 0.6774
+
+## 2.2.e : Let's plot the log-likelihood as a function of p. Mark the ML estimator p hat on the figure.
+
+```{r}
+#calculate log likelihood
+loglik = function(p){ 21*log(p) + 10*log(1-p) }
+
+#Creating a plot and marking ML estimator p hat
+
+curve(loglik, 0, 1, xlab=expression(p), ylab="log-likelihood")
+abline(v=0.6774, lty=3)
+
+#Reference: Problem Set 7 solution provided by Prof. Ott Toomet
+```
